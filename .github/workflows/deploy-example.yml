@@ -1,0 +1,50 @@
+# Example: run a deploy step on a private EC2 via EICE from GitHub
+# Actions, without exposing the EC2 publicly and without a long-lived
+# IAM user. The Actions runner assumes an IAM role via OIDC, then
+# runs the equivalent of scripts/connect.sh.
+#
+# This file is here as a reference; nothing deploys when this repo
+# runs in CI (the job is gated on a manual dispatch).
+
+name: deploy-example
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_name:
+        description: "Name tag of the target EC2"
+        required: true
+        default: "eice-demo-target"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume AWS role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::111122223333:role/gha-eice-deployer
+          aws-region: ap-south-1
+
+      - name: Resolve instance id
+        id: resolve
+        run: |
+          id=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${{ inputs.instance_name }}" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Run deploy over EICE
+        run: |
+          aws ec2-instance-connect ssh \
+            --instance-id ${{ steps.resolve.outputs.id }} \
+            --os-user ec2-user \
+            --command "sudo systemctl restart app && sudo systemctl status app --no-pager"
